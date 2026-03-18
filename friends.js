@@ -1,5 +1,5 @@
 // ==================== friends.js - Gestión de amigos (SIN FOTO) ====================
-// Versión: 2.7 - Manejo de errores para índice faltante y búsqueda case‑insensitive
+// Versión: 2.6 - Usa búsqueda sensible a mayúsculas (original)
 
 const Friends = {
   async buscarUsuarios() {
@@ -17,7 +17,7 @@ const Friends = {
       const result = await Storage.searchUsersByUsername(term, 10);
 
       if (result.items.length === 0) {
-        container.innerHTML = '<p style="text-align:center; padding:20px;">No se encontraron usuarios con ese nombre.</p>';
+        container.innerHTML = '<p style="text-align:center; padding:20px;">No se encontraron usuarios</p>';
         return;
       }
 
@@ -63,11 +63,7 @@ const Friends = {
 
     } catch (error) {
       console.error('Error buscando usuarios:', error);
-      if (error.message === 'missing-index') {
-        container.innerHTML = '<p style="text-align:center; color:var(--zone-5);">Error de configuración: falta un índice en Firestore. Por favor, contacta al administrador.</p>';
-      } else {
-        container.innerHTML = '<p style="text-align:center; color:var(--zone-5);">Error en la búsqueda. Inténtalo de nuevo.</p>';
-      }
+      container.innerHTML = '<p style="text-align:center; color:var(--zone-5);">Error en la búsqueda. Inténtalo de nuevo.</p>';
     } finally {
       Utils.hideLoading();
     }
@@ -149,11 +145,7 @@ const Friends = {
 
     } catch (error) {
       console.error('Error cargando solicitudes:', error);
-      if (error.code === 'failed-precondition' || error.message.includes('index')) {
-        container.innerHTML = '<p style="text-align:center; color:var(--zone-5);">Error de configuración: falta un índice en Firestore para las solicitudes. Por favor, contacta al administrador.</p>';
-      } else {
-        container.innerHTML = '<p style="text-align:center; color:var(--zone-5);">Error al cargar solicitudes. Inténtalo de nuevo.</p>';
-      }
+      container.innerHTML = '<p style="text-align:center; color:var(--zone-5);">Error al cargar solicitudes. Inténtalo de nuevo.</p>';
     }
   },
 
