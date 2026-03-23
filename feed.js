@@ -1,5 +1,5 @@
 // ==================== feed.js - Feed de entrenamientos de amigos (SIN FOTO) ====================
-// Versión: 3.6 - Eliminado badge de novedades (solo solicitudes de amistad generan badge)
+// Versión: 3.6 - Uso de métricas precalculadas en la sesión
 // ====================
 
 const Feed = {
@@ -73,11 +73,12 @@ const Feed = {
 
         const fechaStr = fecha.toLocaleDateString();
         const duracion = sesion.duracion || 0;
-        
-        // Calcular métricas reales
-        const metricas = PlanGenerator.calcularMetricasSesion(sesion);
-        const distancia = metricas.distanciaTotal.toFixed(2);
-        const tss = metricas.tssTotal;
+
+        // ===== USAR MÉTRICAS PRECALCULADAS =====
+        const metricas = sesion.detalle || {};
+        const distancia = metricas.distanciaEstimada ? metricas.distanciaEstimada.toFixed(2) : '0';
+        const tss = metricas.tssEstimada || 0;
+        // ======================================
 
         html += `
           <div class="feed-item">
@@ -102,8 +103,7 @@ const Feed = {
 
       container.innerHTML = html;
 
-      // ===== MODIFICACIÓN: Solo se marca como leído si se pide, pero no se actualiza badge =====
-      // El badge de novedades se gestiona exclusivamente con solicitudes de amistad (friends.js)
+      // Actualizar badge de novedades (solo si se pide marcar como leído)
       if (marcarLeido) {
         await this.marcarTodoLeido();
       }
