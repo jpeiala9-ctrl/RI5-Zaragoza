@@ -1,0 +1,361 @@
+// ==================== friends.js - Gestión de amigos (CON FOTO) ====================
+// Versión: 3.8 - Añadidas fotos de perfil en avatares
+// ====================
+
+const Friends = {
+  todosUsuariosPagination: { lastDoc: null, hasMore: true, loading: false },
+
+  initEventListeners() {
+    document.addEventListener('click', (e) => {
+      const target = e.target.closest('[data-friend-action]');
+      if (!target) return;
+      const action = target.getAttribute('data-friend-action');
+      const uid = target.getAttribute('data-uid');
+      const username = target.getAttribute('data-username');
+      const requestId = target.getAttribute('data-request-id');
+      if (action === 'agregar' && uid && username) this.enviarSolicitud(uid, username);
+      else if (action === 'aceptar' && uid && requestId) this.aceptarSolicitud(requestId, uid, AppState.currentUserId);
+      else if (action === 'rechazar' && uid && requestId) this.rechazarSolicitud(requestId);
+      else if (action === 'cancelar' && requestId) this.cancelarSolicitud(requestId);
+    });
+  },
+
+  async obtenerSolicitudesPendientes() {
+    if (!AppState.currentUserId) return { enviadas: [], recibidas: [] };
+    try {
+      const [enviadasSnap, recibidasSnap] = await Promise.all([
+        firebaseServices.db.collection('friendRequests').where('from', '==', AppState.currentUserId).where('status', '==', 'pending').get(),
+        firebaseServices.db.collection('friendRequests').where('to', '==', AppState.currentUserId).where('status', '==', 'pending').get()
+      ]);
+      return { enviadas: enviadasSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })), recibidas: recibidasSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })) };
+    } catch (error) { console.error('Error obteniendo solicitudes pendientes:', error); return { enviadas: [], recibidas: [] }; }
+  },
+
+  async cargarSolicitudes(tipo) {
+    const containerId = tipo === 'recibidas' ? 'listaSolicitudesRecibidas' : 'listaSolicitudesEnviadas';
+    const container = document.getElementById(containerId);
+    if (!container || !AppState.currentUserId) return;
+    Utils.showLoading();
+    try {
+      const { recibidas, enviadas } = await this.obtenerSolicitudesPendientes();
+      const solicitudes = tipo === 'recibidas' ? recibidas : enviadas;
+      if (solicitudes.length === 0) { container.innerHTML = `<p style="text-align:center; padding:20px;">No tienes solicitudes ${tipo === 'recibidas' ? 'pendientes' : 'enviadas'}</p>`; return; }
+      let html = '';
+      for (const sol of solicitudes) {
+        const otroUid = tipo === 'recibidas' ? sol.from : sol.to;
+        const otroUser = await Storage.getUser(otroUid);
+        const usernameFormatted = Utils.capitalizeUsername(otroUser?.username || 'Usuario');
+        const userTag = otroUser?.username ? `@${otroUser.username}` : 'cuenta no disponible';
+        const photoURL = otroUser?.profile?.photoURL;
+        const avatarHTML = photoURL
+          ? `<img src="${photoURL}" class="resultado-avatar" style="object-fit:cover;">`
+          : `<div class="resultado-avatar" style="background:var(--bg-secondary); display:flex; align-items:center; justify-content:center;">👤</div>`;
+        let botones = '';
+        if (tipo === 'recibidas') {
+          botones = `<button class="btn-amigo" data-friend-action="aceptar" data-request-id="${sol.id}" data-uid="${sol.from}" data-username="${usernameFormatted}" style="background:var(--zone-2); border-color:var(--zone-2); color:var(--bg-primary);">✓ Aceptar</button>
+                     <button class="btn-amigo eliminar" data-friend-action="rechazar" data-request-id="${sol.id}" data-uid="${sol.from}">✗ Rechazar</button>`;
+        } else {
+          botones = `<button class="btn-amigo eliminar" data-friend-action="cancelar" data-request-id="${sol.id}" data-uid="${sol.to}">✖️ Cancelar</button>`;
+        }
+        const _esc1 = Utils.escapeHTML.bind(Utils);
+        html += `
+          <div class="solicitud-item">
+            <div class="resultado-info" data-uid="${_esc1(otroUid)}" onclick="Friends.abrirModalAmigo('${_esc1(otroUid)}')">
+              ${avatarHTML}
+              <div>
+                <div class="resultado-nombre">${_esc1(usernameFormatted)}</div>
+                <div class="resultado-username">${_esc1(userTag)}</div>
+              </div>
+            </div>
+            <div class="solicitud-botones">${botones}</div>
+          </div>
+        `;
+      }
+      container.innerHTML = html;
+    } catch (error) { console.error(`Error cargando solicitudes ${tipo}:`, error); container.innerHTML = '<p style="text-align:center; color:var(--zone-5);">Error al cargar solicitudes. Inténtalo de nuevo.</p>'; }
+    finally { Utils.hideLoading(); }
+  },
+
+  cargarSolicitudesRecibidas() { this.cargarSolicitudes('recibidas'); },
+  cargarSolicitudesEnviadas() { this.cargarSolicitudes('enviadas'); },
+
+  async enviarSolicitud(toUid, toUsername) {
+    if (!AppState.currentUserId) return;
+    if (!toUid || typeof toUid !== 'string' || toUid === 'undefined' || toUid === 'null' || toUid.trim() === '') {
+      console.error('❌ Destinatario inválido:', toUid);
+      Utils.showToast('Error: destinatario no válido', 'error');
+      return;
+    }
+    const confirmed = await Utils.confirm('Enviar solicitud', `¿Enviar solicitud de amistad a ${toUsername}?`);
+    if (!confirmed) return;
+    Utils.showLoading();
+    try {
+      console.log('📤 Enviando solicitud de', AppState.currentUserId, 'a', toUid);
+      const ok = await Storage.sendFriendRequest(AppState.currentUserId, toUid);
+      if (ok) {
+        Utils.showToast('✅ Solicitud enviada', 'success');
+        await this.cargarTodosUsuarios(true);
+        const term = document.getElementById('buscarAmigosInput').value.trim();
+        if (term.length >= 2) await this.buscarUsuarios();
+      } else Utils.showToast('No se pudo enviar la solicitud', 'error');
+    } catch (error) { console.error('Error enviando solicitud:', error); Utils.showToast('Error al enviar solicitud', 'error'); }
+    finally { Utils.hideLoading(); }
+  },
+
+  async aceptarSolicitud(requestId, fromUid, toUid) {
+    Utils.showLoading();
+    try {
+      await Storage.acceptFriendRequest(requestId, fromUid, toUid);
+      Utils.showToast('✅ Solicitud aceptada', 'success');
+      await this.cargarSolicitudesRecibidas();
+      await this.cargarListaAmigos();
+      await this.cargarTodosUsuarios(true);
+      await this.actualizarBadgeSolicitudes();
+    } catch (error) { console.error('Error aceptando solicitud:', error); Utils.showToast('Error al aceptar', 'error'); }
+    finally { Utils.hideLoading(); }
+  },
+
+  async rechazarSolicitud(requestId) {
+    Utils.showLoading();
+    try {
+      await Storage.rejectFriendRequest(requestId);
+      Utils.showToast('Solicitud rechazada', 'info');
+      await this.cargarSolicitudesRecibidas();
+      await this.cargarTodosUsuarios(true);
+      await this.actualizarBadgeSolicitudes();
+    } catch (error) { console.error('Error rechazando solicitud:', error); Utils.showToast('Error al rechazar', 'error'); }
+    finally { Utils.hideLoading(); }
+  },
+
+  async cancelarSolicitud(requestId) {
+    const confirmed = await Utils.confirm('Cancelar solicitud', '¿Cancelar esta solicitud de amistad?');
+    if (!confirmed) return;
+    Utils.showLoading();
+    try {
+      await firebaseServices.db.collection('friendRequests').doc(requestId).update({ status: 'cancelled' });
+      Utils.showToast('✅ Solicitud cancelada', 'success');
+      await this.cargarTodosUsuarios(true);
+      await this.actualizarBadgeSolicitudes();
+      const term = document.getElementById('buscarAmigosInput').value.trim();
+      if (term.length >= 2) await this.buscarUsuarios();
+      const enviadasDiv = document.getElementById('listaSolicitudesEnviadas');
+      if (enviadasDiv && enviadasDiv.style.display === 'block') await this.cargarSolicitudesEnviadas();
+    } catch (error) { console.error('Error cancelando solicitud:', error); if (error.code === 'not-found') { Utils.showToast('La solicitud ya no existe', 'info'); await this.cargarTodosUsuarios(true); await this.actualizarBadgeSolicitudes(); } else Utils.showToast('Error al cancelar: ' + (error.message || 'desconocido'), 'error'); }
+    finally { Utils.hideLoading(); }
+  },
+
+  async cargarListaAmigos() {
+    const container = document.getElementById('listaAmigos');
+    if (!container || !AppState.currentUserId) return;
+    Utils.showLoading();
+    try {
+      const amigos = await Storage.getFriends(AppState.currentUserId);
+      if (amigos.length === 0) { container.innerHTML = '<p style="text-align:center; padding:20px;">Aún no tienes amigos. ¡Busca y añade!</p>'; return; }
+      let html = '';
+      for (const amigo of amigos) {
+        const photoURL = amigo.profile?.photoURL;
+        const avatarHTML = photoURL
+          ? `<img src="${photoURL}" class="resultado-avatar" style="object-fit:cover;">`
+          : `<div class="resultado-avatar" style="background:var(--bg-secondary); display:flex; align-items:center; justify-content:center;">👤</div>`;
+        const usernameFormatted = Utils.capitalizeUsername(amigo.username);
+        const tieneNovedades = AppState.amigosConNovedades?.has(amigo.uid);
+        const nombreClass = tieneNovedades ? 'amigo-nuevo' : '';
+        html += `
+          <div class="resultado-busqueda" style="justify-content:space-between;">
+            <div class="resultado-info" data-uid="${amigo.uid}" onclick="Friends.abrirModalAmigo('${amigo.uid}')">
+              ${avatarHTML}
+              <div>
+                <div class="resultado-nombre ${nombreClass}">${usernameFormatted}</div>
+                <div class="resultado-username">@${amigo.username}</div>
+              </div>
+            </div>
+            <div style="display:flex; gap:8px;">
+              <button class="btn-amigo chat-btn" onclick="event.stopPropagation(); Chat.startChatWithFriend('${amigo.uid}', '${usernameFormatted}')">💬 CHAT</button>
+              <button class="btn-amigo eliminar" onclick="event.stopPropagation(); Friends.eliminarAmigo('${amigo.uid}')">✕</button>
+            </div>
+          </div>
+        `;
+      }
+      container.innerHTML = html;
+    } catch (error) { console.error('Error cargando lista de amigos:', error); container.innerHTML = '<p style="text-align:center; color:var(--zone-5);">Error al cargar amigos</p>'; }
+    finally { Utils.hideLoading(); }
+  },
+
+  async eliminarAmigo(friendUid) {
+    const confirmed = await Utils.confirm('Eliminar amigo', '¿Eliminar este amigo?');
+    if (!confirmed) return;
+    Utils.showLoading();
+    try {
+      await Storage.removeFriend(AppState.currentUserId, friendUid);
+      Utils.showToast('✅ Amigo eliminado', 'success');
+      await this.cargarListaAmigos();
+      await this.cargarTodosUsuarios(true);
+    } catch (error) { console.error('Error eliminando amigo:', error); Utils.showToast('Error al eliminar', 'error'); }
+    finally { Utils.hideLoading(); }
+  },
+
+  async abrirModalAmigo(uid) {
+    Utils.showLoading();
+    try {
+      const userDoc = await firebaseServices.db.collection('users').doc(uid).get();
+      if (!userDoc.exists) { Utils.showToast('Usuario no encontrado', 'error'); return; }
+      const userData = userDoc.data();
+      const profile = userData.profile || {};
+      const age = profile.age ? profile.age + ' años' : '—';
+      const gender = profile.gender === 'male' ? 'Hombre' : profile.gender === 'female' ? 'Mujer' : profile.gender === 'other' ? 'Otro' : '—';
+      const bio = profile.bio || 'Sin biografía';
+      const city = profile.city || '—';
+      const weight = profile.weight ? profile.weight + ' kg' : '—';
+      const height = profile.height ? profile.height + ' cm' : '—';
+      const usernameFormatted = Utils.capitalizeUsername(userData.username);
+      const photoURL = profile.photoURL;
+      const avatarHTML = photoURL
+        ? `<img src="${photoURL}" style="width:80px; height:80px; border-radius:50%; object-fit:cover; margin-bottom:10px;">`
+        : `<div style="width:80px; height:80px; background:var(--bg-secondary); border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:40px; margin:0 auto 10px auto;">👤</div>`;
+      const contenido = `
+        ${avatarHTML}
+        <div style="margin-bottom:16px;">
+          <div style="font-size:24px; color:var(--accent-yellow);">${usernameFormatted}</div>
+          <div style="font-size:14px; color:var(--text-secondary);">@${userData.username}</div>
+        </div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; text-align:left;">
+          <div><strong>Bio:</strong> ${bio}</div>
+          <div><strong>Ciudad:</strong> ${city}</div>
+          <div><strong>Edad:</strong> ${age}</div>
+          <div><strong>Género:</strong> ${gender}</div>
+          <div><strong>Peso:</strong> ${weight}</div>
+          <div><strong>Altura:</strong> ${height}</div>
+        </div>
+      `;
+      document.getElementById('modalAmigoContenido').innerHTML = contenido;
+      document.getElementById('modalAmigoOverlay').style.display = 'block';
+      document.getElementById('modalAmigo').style.display = 'block';
+    } catch (error) { console.error('Error cargando perfil de amigo:', error); Utils.showToast('Error al cargar perfil', 'error'); }
+    finally { Utils.hideLoading(); }
+  },
+
+  cerrarModalAmigo() {
+    document.getElementById('modalAmigoOverlay').style.display = 'none';
+    document.getElementById('modalAmigo').style.display = 'none';
+  },
+
+  async cargarTodosUsuarios(reset = false) {
+    const container = document.getElementById('todosUsuariosList');
+    if (!container) return;
+    if (this.todosUsuariosPagination.loading) return;
+    this.todosUsuariosPagination.loading = true;
+    if (reset) { container.innerHTML = '<div style="text-align:center; padding:20px;">⏳ Cargando...</div>'; this.todosUsuariosPagination.lastDoc = null; this.todosUsuariosPagination.hasMore = true; }
+    try {
+      const { enviadas, recibidas } = await this.obtenerSolicitudesPendientes();
+      const result = await Storage.getAllUsers(20, reset ? null : this.todosUsuariosPagination.lastDoc);
+      if (reset) container.innerHTML = '';
+      if (result.users.length === 0) { if (reset) container.innerHTML = '<p style="text-align:center; padding:20px;">No hay más usuarios</p>'; this.todosUsuariosPagination.hasMore = false; this.todosUsuariosPagination.loading = false; const loadMoreBtn = document.getElementById('cargarMasUsuariosBtn'); if (loadMoreBtn) loadMoreBtn.style.display = 'none'; return; }
+      this.todosUsuariosPagination.lastDoc = result.lastDoc;
+      this.todosUsuariosPagination.hasMore = result.users.length === 20;
+      let html = '';
+      for (const user of result.users) {
+        if (user.uid === AppState.currentUserId) continue;
+        if (AppState.currentUserData?.friendIds?.includes(user.uid)) continue;
+        const solicitudEnviada = enviadas.some(s => s.to === user.uid);
+        const solicitudRecibida = recibidas.some(s => s.from === user.uid);
+        const solicitudPendiente = solicitudEnviada || solicitudRecibida;
+        let solicitudId = null;
+        if (solicitudEnviada) solicitudId = enviadas.find(s => s.to === user.uid)?.id;
+        if (solicitudRecibida) solicitudId = recibidas.find(s => s.from === user.uid)?.id;
+        const photoURL = user.profile?.photoURL;
+        const avatarHTML = photoURL
+          ? `<img src="${photoURL}" class="resultado-avatar" style="object-fit:cover;">`
+          : `<div class="resultado-avatar" style="background:var(--bg-secondary); display:flex; align-items:center; justify-content:center;">👤</div>`;
+        const usernameFormatted = Utils.capitalizeUsername(user.username);
+        let boton = '';
+        if (solicitudPendiente) {
+          if (solicitudEnviada) boton = `<button class="btn-amigo" data-friend-action="cancelar" data-request-id="${solicitudId}" data-uid="${user.uid}">✖️ Cancelar</button>`;
+          else boton = `<button class="btn-amigo" data-friend-action="aceptar" data-request-id="${solicitudId}" data-uid="${user.uid}" data-username="${usernameFormatted}">✓ Aceptar</button>
+                        <button class="btn-amigo eliminar" data-friend-action="rechazar" data-request-id="${solicitudId}" data-uid="${user.uid}">✗ Rechazar</button>`;
+        } else boton = `<button class="btn-amigo" data-friend-action="agregar" data-uid="${user.uid}" data-username="${usernameFormatted}">➕ Agregar</button>`;
+        const _esc2 = Utils.escapeHTML.bind(Utils);
+        html += `
+          <div class="resultado-busqueda">
+            <div class="resultado-info" data-uid="${_esc2(user.uid)}" onclick="Friends.abrirModalAmigo('${_esc2(user.uid)}')">
+              ${avatarHTML}
+              <div>
+                <div class="resultado-nombre">${_esc2(usernameFormatted)}</div>
+                <div class="resultado-username">@${_esc2(user.username)}</div>
+              </div>
+            </div>
+            <div>${boton}</div>
+          </div>
+        `;
+      }
+      container.innerHTML += html;
+      const loadMoreBtn = document.getElementById('cargarMasUsuariosBtn');
+      if (loadMoreBtn) loadMoreBtn.style.display = this.todosUsuariosPagination.hasMore ? 'block' : 'none';
+    } catch (error) { console.error('Error cargando todos los usuarios:', error); if (reset) container.innerHTML = '<p style="text-align:center; color:var(--zone-5);">Error al cargar</p>'; }
+    finally { this.todosUsuariosPagination.loading = false; }
+  },
+
+  cargarMasTodosUsuarios() { this.cargarTodosUsuarios(false); },
+
+  async actualizarBadgeSolicitudes() {
+    if (!AppState.currentUserId) return;
+    try {
+      const { recibidas } = await this.obtenerSolicitudesPendientes();
+      const count = recibidas.length;
+      AppState.solicitudesPendientesCount = count;
+      AppState.actualizarBadgeSolicitudes();
+    } catch (error) { console.error('Error actualizando badge solicitudes:', error); }
+  },
+
+  async buscarUsuarios() {
+    const term = document.getElementById('buscarAmigosInput').value.trim();
+    const container = document.getElementById('resultadosBusqueda');
+    if (term.length < 2) { container.innerHTML = ''; return; }
+    Utils.showLoading();
+    try {
+      const result = await Storage.searchUsersByUsername(term, 10);
+      if (result.items.length === 0) { container.innerHTML = '<p style="text-align:center; padding:20px;">No se encontraron usuarios</p>'; return; }
+      const { enviadas, recibidas } = await this.obtenerSolicitudesPendientes();
+      let html = '';
+      for (const user of result.items) {
+        if (user.uid === AppState.currentUserId) continue;
+        const esAmigo = AppState.currentUserData?.friendIds?.includes(user.uid);
+        const solicitudEnviada = enviadas.some(s => s.to === user.uid);
+        const solicitudRecibida = recibidas.some(s => s.from === user.uid);
+        const solicitudPendiente = solicitudEnviada || solicitudRecibida;
+        let solicitudId = null;
+        if (solicitudEnviada) solicitudId = enviadas.find(s => s.to === user.uid)?.id;
+        if (solicitudRecibida) solicitudId = recibidas.find(s => s.from === user.uid)?.id;
+        const photoURL = user.profile?.photoURL;
+        const avatarHTML = photoURL
+          ? `<img src="${photoURL}" class="resultado-avatar" style="object-fit:cover;">`
+          : `<div class="resultado-avatar" style="background:var(--bg-secondary); display:flex; align-items:center; justify-content:center;">👤</div>`;
+        const usernameFormatted = Utils.capitalizeUsername(user.username);
+        let boton = '';
+        if (esAmigo) boton = '<span style="color:var(--zone-2);">✓ Amigo</span>';
+        else if (solicitudPendiente) {
+          if (solicitudEnviada) boton = `<button class="btn-amigo" data-friend-action="cancelar" data-request-id="${solicitudId}" data-uid="${user.uid}">✖️ Cancelar</button>`;
+          else boton = `<button class="btn-amigo" data-friend-action="aceptar" data-request-id="${solicitudId}" data-uid="${user.uid}" data-username="${usernameFormatted}">✓ Aceptar</button>
+                       <button class="btn-amigo eliminar" data-friend-action="rechazar" data-request-id="${solicitudId}" data-uid="${user.uid}">✗ Rechazar</button>`;
+        } else boton = `<button class="btn-amigo" data-friend-action="agregar" data-uid="${user.uid}" data-username="${usernameFormatted}">➕ Agregar</button>`;
+        const _esc3 = Utils.escapeHTML.bind(Utils);
+        html += `
+          <div class="resultado-busqueda">
+            <div class="resultado-info" data-uid="${_esc3(user.uid)}" onclick="Friends.abrirModalAmigo('${_esc3(user.uid)}')">
+              ${avatarHTML}
+              <div>
+                <div class="resultado-nombre">${_esc3(usernameFormatted)}</div>
+                <div class="resultado-username">@${_esc3(user.username)}</div>
+              </div>
+            </div>
+            <div>${boton}</div>
+          </div>
+        `;
+      }
+      container.innerHTML = html;
+    } catch (error) { console.error('Error buscando usuarios:', error); container.innerHTML = '<p style="text-align:center; color:var(--zone-5);">Error en la búsqueda. Inténtalo de nuevo.</p>'; }
+    finally { Utils.hideLoading(); }
+  }
+};
+
+document.addEventListener('DOMContentLoaded', () => { Friends.initEventListeners(); });
+window.Friends = Friends;
