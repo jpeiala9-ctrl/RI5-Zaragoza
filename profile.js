@@ -1,0 +1,272 @@
+// ==================== profile.js - Gestión de perfil de usuario (CON FOTO) ====================
+// Versión: 3.1 - Corregido scroll del modal (body bloqueado al abrir)
+// ====================
+
+const Profile = {
+async cargarPerfil() {
+const container = document.getElementById(‘perfilContainer’);
+if (!container || !AppState.currentUserId) return;
+
+```
+try {
+  const userDoc = await firebaseServices.db.collection('users').doc(AppState.currentUserId).get();
+  const userData = userDoc.data();
+
+  // Corrección del contador de amigos
+  const friendIds = userData.friendIds || [];
+  const currentCount = userData.friendsCount || 0;
+  if (friendIds.length !== currentCount) {
+    firebaseServices.db.collection('users').doc(AppState.currentUserId).update({
+      friendsCount: friendIds.length
+    }).catch(e => console.warn('Error corrigiendo friendsCount:', e));
+    userData.friendsCount = friendIds.length;
+  }
+
+  const profile = userData.profile || {
+    bio: '',
+    city: '',
+    age: null,
+    gender: '',
+    weight: null,
+    height: null,
+    privacySettings: { showTrainings: 'friends', showProfile: 'public' },
+    photoURL: null
+  };
+
+  // Escapar todos los datos de usuario antes de insertar en HTML (previene XSS)
+  const safePhotoURL = profile.photoURL ? Utils.escapeHTML(profile.photoURL) : null;
+  const photoHTML = safePhotoURL
+    ? `<img src="${safePhotoURL}" class="perfil-avatar" style="object-fit:cover;" alt="">`
+    : `<div class="perfil-avatar-placeholder">👤</div>`;
+
+  const age    = profile.age ? profile.age + ' años' : '—';
+  const gender = profile.gender === 'male' ? 'Hombre' : profile.gender === 'female' ? 'Mujer' : profile.gender === 'other' ? 'Otro' : '—';
+
+  const safeUsername = Utils.escapeHTML(userData.username || '');
+  const safeBio      = Utils.escapeHTML(profile.bio || '—');
+  const safeCity     = Utils.escapeHTML(profile.city || '—');
+
+  let html = `
+    <div class="perfil-header">
+      ${photoHTML}
+      <div class="perfil-info">
+        <div class="perfil-nombre">${safeUsername}</div>
+        <div class="perfil-username">@${safeUsername}</div>
+        <div class="perfil-stats">
+          <div class="perfil-stat"><span>${userData.friendsCount || 0}</span><label>Amigos</label></div>
+          <div class="perfil-stat"><span>${userData.calculosMes || 0}</span><label>Cálculos/mes</label></div>
+          <div class="perfil-stat"><span>${userData.premium ? 'PREMIUM' : 'GRATIS'}</span><label>Plan</label></div>
+        </div>
+      </div>
+    </div>
+    <div class="perfil-detalle-grid">
+      <div class="perfil-detalle-item"><span class="label">BIO</span><span class="value">${safeBio}</span></div>
+      <div class="perfil-detalle-item"><span class="label">CIUDAD</span><span class="value">${safeCity}</span></div>
+      <div class="perfil-detalle-item"><span class="label">EDAD</span><span class="value">${age}</span></div>
+      <div class="perfil-detalle-item"><span class="label">GÉNERO</span><span class="value">${gender}</span></div>
+      <div class="perfil-detalle-item"><span class="label">PESO</span><span class="value">${profile.weight ? profile.weight + ' kg' : '—'}</span></div>
+      <div class="perfil-detalle-item"><span class="label">ALTURA</span><span class="value">${profile.height ? profile.height + ' cm' : '—'}</span></div>
+    </div>
+  `;
+
+  container.innerHTML = html;
+
+} catch (error) {
+  console.error('Error cargando perfil:', error);
+}
+```
+
+},
+
+abrirModal() {
+this.cargarDatosEnModal();
+this.cargarFotoActual();
+document.getElementById(‘modalEditarPerfilOverlay’).style.display = ‘block’;
+document.getElementById(‘modalEditarPerfil’).style.display = ‘block’;
+// Bloquear scroll del body
+document.body.classList.add(‘modal-open’);
+},
+
+cerrarModal() {
+document.getElementById(‘modalEditarPerfilOverlay’).style.display = ‘none’;
+document.getElementById(‘modalEditarPerfil’).style.display = ‘none’;
+// Restaurar scroll del body
+document.body.classList.remove(‘modal-open’);
+},
+
+async cargarDatosEnModal() {
+try {
+const userDoc = await firebaseServices.db.collection(‘users’).doc(AppState.currentUserId).get();
+const profile = userDoc.data().profile || {};
+
+```
+  document.getElementById('editBio').value = profile.bio || '';
+  document.getElementById('editCity').value = profile.city || '';
+  document.getElementById('editAge').value = profile.age || '';
+  document.getElementById('editGender').value = profile.gender || '';
+  document.getElementById('editWeight').value = profile.weight || '';
+  document.getElementById('editHeight').value = profile.height || '';
+} catch (error) {
+  console.error('Error cargando datos en modal:', error);
+}
+```
+
+},
+
+async cargarFotoActual() {
+const container = document.getElementById(‘currentPhotoPreview’);
+if (!container) return;
+const uid = AppState.currentUserId;
+const url = await Storage.getProfilePictureURL(uid);
+if (url) {
+container.innerHTML = `<img src="${url}" style="width:100px; height:100px; border-radius:50%; object-fit:cover;">`;
+} else {
+container.innerHTML = `<div style="width:100px; height:100px; background:var(--bg-secondary); border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:40px;">👤</div>`;
+}
+},
+
+async seleccionarFoto() {
+const input = document.createElement(‘input’);
+input.type = ‘file’;
+input.accept = ‘image/jpeg,image/png,image/webp’;
+input.onchange = async (e) => {
+const file = e.target.files[0];
+if (!file) return;
+if (file.size > 2 * 1024 * 1024) {
+Utils.showToast(‘La imagen no debe exceder 2 MB’, ‘error’);
+return;
+}
+const processedFile = await this.compressImage(file);
+Utils.showLoading();
+const url = await Storage.uploadProfilePicture(AppState.currentUserId, processedFile);
+Utils.hideLoading();
+if (url) {
+Utils.showToast(‘✅ Foto actualizada’, ‘success’);
+this.cargarFotoActual();
+await Profile.cargarPerfil();
+if (window.Friends) Friends.cargarListaAmigos();
+if (window.Chat) Chat.updateUnreadBadge();
+if (window.Feed) Feed.cargarFeed(false);
+}
+};
+input.click();
+},
+
+async eliminarFoto() {
+const confirm = await Utils.confirm(‘Eliminar foto’, ‘¿Eliminar tu foto de perfil?’);
+if (!confirm) return;
+Utils.showLoading();
+const ok = await Storage.deleteProfilePicture(AppState.currentUserId);
+Utils.hideLoading();
+if (ok) {
+Utils.showToast(‘✅ Foto eliminada’, ‘success’);
+this.cargarFotoActual();
+await Profile.cargarPerfil();
+if (window.Friends) Friends.cargarListaAmigos();
+if (window.Chat) Chat.updateUnreadBadge();
+if (window.Feed) Feed.cargarFeed(false);
+} else {
+Utils.showToast(‘Error al eliminar foto’, ‘error’);
+}
+},
+
+compressImage(file) {
+return new Promise((resolve) => {
+const reader = new FileReader();
+reader.onload = (e) => {
+const img = new Image();
+img.onload = () => {
+const SIZE   = 500; // tamaño del cuadrado de salida
+const canvas = document.createElement(‘canvas’);
+canvas.width  = SIZE;
+canvas.height = SIZE;
+const ctx = canvas.getContext(‘2d’);
+
+```
+      // Recorte centrado manteniendo aspecto (equivalente a object-fit: cover)
+      const ratio  = img.width / img.height;
+      let sx, sy, sw, sh;
+      if (ratio > 1) {
+        // imagen más ancha que alta: recortar los lados
+        sh = img.height;
+        sw = img.height;
+        sx = (img.width - sw) / 2;
+        sy = 0;
+      } else {
+        // imagen más alta que ancha: recortar arriba y abajo
+        sw = img.width;
+        sh = img.width;
+        sx = 0;
+        sy = (img.height - sh) / 2;
+      }
+
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, SIZE, SIZE);
+      canvas.toBlob((blob) => {
+        resolve(new File([blob], 'avatar.jpg', { type: 'image/jpeg' }));
+      }, 'image/jpeg', 0.8);
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+});
+```
+
+},
+
+async guardarPerfil() {
+Utils.showLoading();
+
+```
+try {
+  const bio = document.getElementById('editBio').value.trim() || '';
+  const city = document.getElementById('editCity').value.trim() || '';
+  const age = parseInt(document.getElementById('editAge').value) || null;
+  const gender = document.getElementById('editGender').value;
+  const weight = parseFloat(document.getElementById('editWeight').value) || null;
+  const height = parseFloat(document.getElementById('editHeight').value) || null;
+
+  if (age !== null && (age < 14 || age > 85)) {
+    Utils.showToast('La edad debe estar entre 14 y 85 años', 'error');
+    Utils.hideLoading();
+    return;
+  }
+
+  const updateData = {
+    'profile.bio': bio,
+    'profile.city': city,
+    'profile.age': age,
+    'profile.gender': gender,
+    'profile.weight': weight,
+    'profile.height': height
+  };
+
+  await firebaseServices.db.collection('users').doc(AppState.currentUserId).update(updateData);
+
+  if (AppState.currentUserData) {
+    AppState.currentUserData.profile = {
+      ...(AppState.currentUserData.profile || {}),
+      bio,
+      city,
+      age,
+      gender,
+      weight,
+      height
+    };
+  }
+
+  Utils.showToast('✅ Perfil actualizado', 'success');
+  await this.cargarPerfil();
+  this.cerrarModal();
+
+} catch (error) {
+  console.error('Error guardando perfil:', error);
+  Utils.showToast('Error al guardar perfil', 'error');
+} finally {
+  Utils.hideLoading();
+}
+```
+
+}
+};
+
+window.Profile = Profile;
