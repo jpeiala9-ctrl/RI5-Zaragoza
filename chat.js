@@ -1,0 +1,549 @@
+// ==================== chat.js - Chat estilo Telegram ====================
+// Versión: 1.6 - CORREGIDO: ✓/✓✓ en tiempo real, notificaciones badge en tiempo real
+//
+// CAMBIOS RESPECTO A 1.5:
+// 1. markMessagesAsRead: eliminado operador != (requería índice Firestore inexistente).
+//    Ahora filtra por cliente-side → los mensajes se marcan como leídos correctamente.
+// 2. openChat: ahora awaita markMessagesAsRead antes del render inicial → ✓✓ correcto al abrir.
+// 3. listenMessages: auto-marca como leídos los mensajes nuevos si el chat está abierto.
+// 4. initConversationsListener: nuevo listener en tiempo real para el badge de notificaciones.
+// ====================
+
+const Chat = {
+currentConversationId: null,
+currentOtherUserId: null,
+unsubscribeMessages: null,
+unsubscribeConversations: null, // NUEVO: listener en tiempo real de conversaciones
+
+async getOrCreateConversation(userId, friendId) {
+if (!userId || !friendId) return null;
+const conversationId = [userId, friendId].sort().join(’_’);
+const convRef = firebaseServices.db.collection(‘conversations’).doc(conversationId);
+try {
+const doc = await convRef.get();
+if (doc.exists) return conversationId;
+const [userData, friendData] = await Promise.all([
+Storage.getUser(userId).catch(() => ({ username: ‘Usuario’, profile: {} })),
+Storage.getUser(friendId).catch(() => ({ username: ‘Amigo’, profile: {} }))
+]);
+const participantsData = {
+[userId]: { username: userData.username || ‘Usuario’, photoURL: userData.profile?.photoURL || null },
+[friendId]: { username: friendData.username || ‘Amigo’, photoURL: friendData.profile?.photoURL || null }
+};
+await convRef.set({
+participants: [userId, friendId],
+participantsData,
+lastMessage: ‘’,
+lastUpdated: firebaseServices.Timestamp.now(),
+created: firebaseServices.Timestamp.now()
+});
+console.log(‘✅ Conversación creada:’, conversationId);
+return conversationId;
+} catch (error) {
+console.error(‘❌ Error en getOrCreateConversation:’, error);
+Utils.handleFirebaseError(error);
+return null;
+}
+},
+
+async sendMessage(conversationId, text) {
+if (!conversationId || !text.trim()) return false;
+const senderId = AppState.currentUserId;
+if (!senderId) return false;
+try {
+const messageRef = firebaseServices.db
+.collection(‘conversations’)
+.doc(conversationId)
+.collection(‘messages’)
+.doc();
+
+```
+  const messageData = {
+    senderId,
+    text: text.trim(),
+    timestamp: firebaseServices.Timestamp.now(),
+    read: false,
+    readBy: [senderId]
+  };
+
+  await messageRef.set(messageData);
+
+  await firebaseServices.db
+    .collection('conversations')
+    .doc(conversationId)
+    .update({
+      lastMessage: text.trim(),
+      lastUpdated: firebaseServices.Timestamp.now()
+    });
+  return true;
+} catch (error) {
+  console.error('Error sending message:', error);
+  Utils.handleFirebaseError(error);
+  return false;
+}
+```
+
+},
+
+async getConversations(userId) {
+if (!userId) return [];
+try {
+const snapshot = await firebaseServices.db
+.collection(‘conversations’)
+.where(‘participants’, ‘array-contains’, userId)
+.orderBy(‘lastUpdated’, ‘desc’)
+.get();
+const conversations = [];
+for (const doc of snapshot.docs) {
+const data = doc.data();
+const otherId = data.participants.find(id => id !== userId);
+let otherUser = data.participantsData?.[otherId];
+if (!otherUser) {
+const userDoc = await firebaseServices.db.collection(‘users’).doc(otherId).get();
+otherUser = {
+username: userDoc.exists ? userDoc.data().username : ‘Usuario’,
+photoURL: userDoc.exists ? userDoc.data().profile?.photoURL : null
+};
+}
+conversations.push({
+id: doc.id,
+…data,
+otherUserId: otherId,
+otherUsername: Utils.capitalizeUsername(otherUser.username),
+otherPhotoURL: otherUser.photoURL,
+unreadCount: 0
+});
+}
+// Contar no leídos por cliente-side (sin operador != que requiere índice)
+for (const conv of conversations) {
+const msgsSnapshot = await firebaseServices.db
+.collection(‘conversations’)
+.doc(conv.id)
+.collection(‘messages’)
+.where(‘read’, ‘==’, false)
+.get();
+// Filtramos client-side: mensajes no enviados por mí
+conv.unreadCount = msgsSnapshot.docs.filter(
+d => d.data().senderId !== userId
+).length;
+}
+return conversations;
+} catch (error) {
+console.error(‘Error getting conversations:’, error);
+return [];
+}
+},
+
+listenMessages(conversationId, callback) {
+if (this.unsubscribeMessages) {
+this.unsubscribeMessages();
+}
+
+```
+const query = firebaseServices.db
+  .collection('conversations')
+  .doc(conversationId)
+  .collection('messages')
+  .orderBy('timestamp', 'asc');
+
+this.unsubscribeMessages = query.onSnapshot(
+  snapshot => {
+    const messages = [];
+    snapshot.forEach(doc => {
+      messages.push({ id: doc.id, ...doc.data() });
+    });
+
+    // CORRECCIÓN: Auto-marcar como leídos los mensajes recibidos si el chat está abierto
+    if (this.currentConversationId === conversationId) {
+      this.markMessagesAsRead(conversationId).catch(e =>
+        console.warn('Error auto-marcando leídos:', e)
+      );
+    }
+
+    if (callback) callback(messages);
+  },
+  error => console.error('Error listening messages:', error)
+);
+```
+
+},
+
+// CORRECCIÓN PRINCIPAL: eliminado el operador != que requería índice compuesto en Firestore.
+// Ahora obtenemos todos los mensajes no leídos y filtramos por cliente-side.
+async markMessagesAsRead(conversationId) {
+if (!conversationId) return;
+const userId = AppState.currentUserId;
+if (!userId) return;
+
+```
+try {
+  // Solo buscamos por read == false (sin != senderId para evitar índice compuesto)
+  const snapshot = await firebaseServices.db
+    .collection('conversations')
+    .doc(conversationId)
+    .collection('messages')
+    .where('read', '==', false)
+    .get();
+
+  if (snapshot.empty) return;
+
+  // Filtramos client-side: solo mensajes que NO enviamos nosotros
+  const docsToMark = snapshot.docs.filter(
+    doc => doc.data().senderId !== userId
+  );
+
+  if (docsToMark.length === 0) return;
+
+  const batch = firebaseServices.db.batch();
+  docsToMark.forEach(doc => {
+    batch.update(doc.ref, {
+      read: true,
+      readBy: firebaseServices.FieldValue.arrayUnion(userId)
+    });
+  });
+
+  await batch.commit();
+  console.log(`✅ ${docsToMark.length} mensajes marcados como leídos`);
+} catch (error) {
+  console.error('Error marking messages as read:', error);
+}
+```
+
+},
+
+async renderConversations(container) {
+if (!container || !AppState.currentUserId) return;
+try {
+const conversations = await this.getConversations(AppState.currentUserId);
+if (conversations.length === 0) {
+container.innerHTML = ‘<p style="text-align:center; padding:20px;">No tienes conversaciones. Envía un mensaje a un amigo.</p>’;
+return;
+}
+let html = ‘’;
+for (const conv of conversations) {
+const unreadClass = conv.unreadCount > 0 ? ‘conversacion-no-leida’ : ‘’;
+const fecha = conv.lastUpdated?.toDate ? conv.lastUpdated.toDate().toLocaleDateString() : ‘’;
+const avatarHTML = conv.otherPhotoURL
+? `<img src="${Utils.escapeHTML(conv.otherPhotoURL)}" class="conversacion-avatar" style="object-fit:cover;">`
+: `<div class="conversacion-avatar">👤</div>`;
+const otherUsernameEscaped = Utils.escapeHTML(conv.otherUsername);
+const lastMessageEscaped = conv.lastMessage ? Utils.escapeHTML(conv.lastMessage) : ‘Sin mensajes’;
+const fechaEscaped = Utils.escapeHTML(fecha);
+html += `<div class="conversacion-item ${unreadClass}" data-conv-id="${conv.id}" data-other-user-id="${conv.otherUserId}" data-other-username="${otherUsernameEscaped}"> ${avatarHTML} <div class="conversacion-info"> <div class="conversacion-nombre">${otherUsernameEscaped}</div> <div class="conversacion-preview">${lastMessageEscaped}</div> </div> <div class="conversacion-fecha">${fechaEscaped}</div> ${conv.unreadCount > 0 ?`<div class="conversacion-badge">${conv.unreadCount}</div>`: ''} </div>`;
+}
+container.innerHTML = html;
+container.querySelectorAll(’.conversacion-item’).forEach(el => {
+el.addEventListener(‘click’, () => {
+this.openChat(el.dataset.convId, el.dataset.otherUserId, el.dataset.otherUsername);
+});
+});
+const totalUnread = conversations.reduce((acc, c) => acc + (c.unreadCount || 0), 0);
+if (AppState) {
+AppState.mensajesAmigosNoLeidos = totalUnread;
+AppState.actualizarBadgeChat();
+}
+} catch (error) {
+console.error(‘Error rendering conversations:’, error);
+container.innerHTML = ‘<p style="text-align:center; color:var(--zone-5);">Error al cargar conversaciones</p>’;
+}
+},
+
+// NUEVO: listener en tiempo real para el badge de conversaciones (sustituye al polling manual)
+initConversationsListener() {
+if (!AppState.currentUserId) return;
+
+```
+if (this.unsubscribeConversations) {
+  this.unsubscribeConversations();
+}
+
+this.unsubscribeConversations = firebaseServices.db
+  .collection('conversations')
+  .where('participants', 'array-contains', AppState.currentUserId)
+  .orderBy('lastUpdated', 'desc')
+  .onSnapshot(async () => {
+    // Actualizar lista de conversaciones y badge en tiempo real
+    const container = document.getElementById('listaConversaciones');
+    if (container) {
+      await this.renderConversations(container);
+    } else {
+      await this.updateUnreadBadge();
+    }
+  }, error => {
+    console.warn('Error en listener de conversaciones:', error);
+  });
+```
+
+},
+
+stopConversationsListener() {
+if (this.unsubscribeConversations) {
+this.unsubscribeConversations();
+this.unsubscribeConversations = null;
+}
+},
+
+// CORRECCIÓN: openChat ahora es async y awaita markMessagesAsRead antes de renderizar
+async openChat(conversationId, otherUserId, otherUsername) {
+let modal = document.getElementById(‘chatModal’);
+if (!modal) {
+modal = document.createElement(‘div’);
+modal.id = ‘chatModal’;
+modal.className = ‘modal’;
+modal.innerHTML = `<div class="modal-content" id="chatModalContent"> <div class="chat-header"> <span id="chatFriendName"></span> <button class="close-chat" id="closeChatBtn">✕</button> </div> <div id="chatMessages" class="chat-messages"></div> <div class="chat-input"> <input type="text" id="chatInput" placeholder="Escribe un mensaje..."> <button class="send-btn" id="sendChatBtn">📤</button> <button class="clear-chat-btn" id="clearChatBtn">🗑️</button> </div> </div>`;
+document.body.appendChild(modal);
+document.getElementById(‘closeChatBtn’).addEventListener(‘click’, () => this.closeChat());
+document.getElementById(‘sendChatBtn’).addEventListener(‘click’, () => this.sendCurrentMessage());
+document.getElementById(‘chatInput’).addEventListener(‘keypress’, (e) => {
+if (e.key === ‘Enter’) this.sendCurrentMessage();
+});
+document.getElementById(‘clearChatBtn’).addEventListener(‘click’, async () => {
+if (confirm(’¿Seguro que quieres borrar todos los mensajes de esta conversación? Esta acción no se puede deshacer.’)) {
+await this.clearChat(this.currentConversationId);
+await this.loadAndRenderMessages(this.currentConversationId, this.currentOtherUserId);
+await firebaseServices.db.collection(‘conversations’).doc(this.currentConversationId).update({
+lastMessage: ‘’,
+lastUpdated: firebaseServices.Timestamp.now()
+}).catch(e => console.warn(‘No se pudo actualizar lastMessage’, e));
+Utils.showToast(‘Chat vaciado correctamente’, ‘success’);
+}
+});
+} else {
+const clearBtn = document.getElementById(‘clearChatBtn’);
+if (clearBtn) {
+const newClearBtn = clearBtn.cloneNode(true);
+clearBtn.parentNode.replaceChild(newClearBtn, clearBtn);
+newClearBtn.addEventListener(‘click’, async () => {
+if (confirm(’¿Seguro que quieres borrar todos los mensajes de esta conversación? Esta acción no se puede deshacer.’)) {
+await this.clearChat(this.currentConversationId);
+await this.loadAndRenderMessages(this.currentConversationId, this.currentOtherUserId);
+await firebaseServices.db.collection(‘conversations’).doc(this.currentConversationId).update({
+lastMessage: ‘’,
+lastUpdated: firebaseServices.Timestamp.now()
+}).catch(e => console.warn(‘e’, e));
+Utils.showToast(‘Chat vaciado correctamente’, ‘success’);
+}
+});
+}
+}
+
+```
+const chatFriendName = document.getElementById('chatFriendName');
+const chatMessages = document.getElementById('chatMessages');
+chatFriendName.textContent = otherUsername;
+chatMessages.innerHTML = '';
+modal.style.display = 'flex';
+
+this.currentConversationId = conversationId;
+this.currentOtherUserId = otherUserId;
+
+// CORRECCIÓN: awaitar markMessagesAsRead ANTES del render para que ✓✓ sea correcto desde el inicio
+await this.markMessagesAsRead(conversationId);
+
+// Render inicial con datos ya actualizados
+await this.loadAndRenderMessages(conversationId, otherUserId);
+chatMessages.scrollTop = chatMessages.scrollHeight;
+
+// Listener en tiempo real: actualiza ✓/✓✓ cuando el otro usuario lee
+this.listenMessages(conversationId, (newMessages) => {
+  this.renderMessagesGrouped(newMessages, otherUserId);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+  this.updateUnreadBadge();
+});
+
+this.updateConversationsList();
+```
+
+},
+
+async updateConversationsList() {
+const container = document.getElementById(‘listaConversaciones’);
+if (container) {
+await this.renderConversations(container);
+}
+},
+
+async clearChat(conversationId) {
+if (!conversationId) return;
+try {
+const snapshot = await firebaseServices.db
+.collection(‘conversations’)
+.doc(conversationId)
+.collection(‘messages’)
+.get();
+const batch = firebaseServices.db.batch();
+snapshot.forEach(doc => {
+batch.delete(doc.ref);
+});
+await batch.commit();
+} catch (error) {
+console.error(‘Error clearing chat:’, error);
+Utils.showToast(‘Error al vaciar el chat’, ‘error’);
+}
+},
+
+async loadAndRenderMessages(conversationId, otherUserId) {
+const snapshot = await firebaseServices.db
+.collection(‘conversations’)
+.doc(conversationId)
+.collection(‘messages’)
+.orderBy(‘timestamp’, ‘asc’)
+.get();
+const messages = [];
+snapshot.forEach(doc => messages.push({ id: doc.id, …doc.data() }));
+this.renderMessagesGrouped(messages, otherUserId);
+const chatMessages = document.getElementById(‘chatMessages’);
+if (chatMessages) chatMessages.scrollTop = chatMessages.scrollHeight;
+},
+
+renderMessagesGrouped(messages, otherUserId) {
+const container = document.getElementById(‘chatMessages’);
+if (!container) return;
+container.innerHTML = ‘’;
+if (!messages.length) return;
+const grouped = this.groupMessagesByDate(messages);
+for (const [dateLabel, msgs] of Object.entries(grouped)) {
+const dateDiv = document.createElement(‘div’);
+dateDiv.className = ‘chat-date-separator’;
+dateDiv.textContent = dateLabel;
+container.appendChild(dateDiv);
+msgs.forEach(msg => {
+const msgElement = this.createMessageElement(msg, otherUserId);
+container.appendChild(msgElement);
+});
+}
+},
+
+async appendMessagesGrouped(newMessages, otherUserId) {
+if (this.currentConversationId) {
+await this.loadAndRenderMessages(this.currentConversationId, otherUserId);
+}
+},
+
+groupMessagesByDate(messages) {
+const groups = {};
+const today = new Date();
+const yesterday = new Date(today);
+yesterday.setDate(today.getDate() - 1);
+messages.forEach(msg => {
+let timestamp = msg.timestamp;
+if (timestamp && timestamp.toDate) timestamp = timestamp.toDate();
+else if (timestamp) timestamp = new Date(timestamp);
+else timestamp = new Date();
+let dateLabel;
+if (timestamp.toDateString() === today.toDateString()) dateLabel = ‘Hoy’;
+else if (timestamp.toDateString() === yesterday.toDateString()) dateLabel = ‘Ayer’;
+else {
+const options = { year: ‘numeric’, month: ‘long’, day: ‘numeric’ };
+dateLabel = timestamp.toLocaleDateString(undefined, options);
+}
+if (!groups[dateLabel]) groups[dateLabel] = [];
+groups[dateLabel].push(msg);
+});
+return groups;
+},
+
+createMessageElement(msg, otherUserId) {
+const isSent = msg.senderId === AppState.currentUserId;
+const messageDiv = document.createElement(‘div’);
+messageDiv.className = `chat-message ${isSent ? 'sent' : 'received'}`;
+
+```
+const textSpan = document.createElement('div');
+textSpan.className = 'message-text';
+textSpan.textContent = msg.text;
+
+const footerSpan = document.createElement('div');
+footerSpan.className = 'message-footer';
+
+const timeSpan = document.createElement('span');
+timeSpan.className = 'message-time';
+
+let timestamp = msg.timestamp;
+if (timestamp && timestamp.toDate) timestamp = timestamp.toDate();
+else if (timestamp) timestamp = new Date(timestamp);
+else timestamp = new Date();
+
+const hours = timestamp.getHours().toString().padStart(2, '0');
+const minutes = timestamp.getMinutes().toString().padStart(2, '0');
+timeSpan.textContent = `${hours}:${minutes}`;
+
+if (isSent) {
+  const statusSpan = document.createElement('span');
+  statusSpan.className = 'message-status';
+  const readBy = msg.readBy || [];
+  const isRead = readBy.includes(otherUserId);
+
+  if (isRead) {
+    statusSpan.innerHTML = '✓✓';
+    statusSpan.title = 'Visto';
+    statusSpan.style.color = '#4caf50';
+    statusSpan.style.fontWeight = 'bold';
+  } else {
+    statusSpan.innerHTML = '✓';
+    statusSpan.title = 'Enviado';
+    statusSpan.style.color = '#888888';
+  }
+  footerSpan.appendChild(statusSpan);
+}
+
+footerSpan.appendChild(timeSpan);
+messageDiv.appendChild(textSpan);
+messageDiv.appendChild(footerSpan);
+
+return messageDiv;
+```
+
+},
+
+async sendCurrentMessage() {
+const input = document.getElementById(‘chatInput’);
+const text = input.value.trim();
+if (!text || !this.currentConversationId) return;
+input.value = ‘’;
+const success = await this.sendMessage(this.currentConversationId, text);
+if (success) {
+await this.loadAndRenderMessages(this.currentConversationId, this.currentOtherUserId);
+const chatMessages = document.getElementById(‘chatMessages’);
+if (chatMessages) chatMessages.scrollTop = chatMessages.scrollHeight;
+this.updateConversationsList();
+}
+},
+
+closeChat() {
+if (this.unsubscribeMessages) {
+this.unsubscribeMessages();
+this.unsubscribeMessages = null;
+}
+const modal = document.getElementById(‘chatModal’);
+if (modal) modal.style.display = ‘none’;
+this.currentConversationId = null;
+this.currentOtherUserId = null;
+this.updateUnreadBadge();
+this.updateConversationsList();
+},
+
+async startChatWithFriend(friendId, friendUsername) {
+if (!AppState.currentUserId || !friendId) return;
+const conversationId = await this.getOrCreateConversation(AppState.currentUserId, friendId);
+if (conversationId) this.openChat(conversationId, friendId, friendUsername);
+},
+
+async updateUnreadBadge() {
+if (!AppState.currentUserId) return;
+try {
+const conversations = await this.getConversations(AppState.currentUserId);
+const totalUnread = conversations.reduce((acc, c) => acc + (c.unreadCount || 0), 0);
+if (AppState) {
+AppState.mensajesAmigosNoLeidos = totalUnread;
+if (AppState.actualizarBadgeChat) {
+AppState.actualizarBadgeChat();
+}
+}
+} catch (error) {
+console.error(‘Error updating unread badge:’, error);
+}
+}
+};
+
+window.Chat = Chat;
