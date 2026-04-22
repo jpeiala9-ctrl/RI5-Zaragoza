@@ -1,15 +1,21 @@
 // ==================== profile.js - Gestión de perfil de usuario (CON VERIFICACIÓN DE EMAIL) ====================
-// Versión: 3.5 - Eliminado botón de reenviar verificación del perfil
+// Versión: 3.7 - Forzar recarga desde servidor y logs de depuración
 // ====================
 
 const Profile = {
   async cargarPerfil() {
     const container = document.getElementById('perfilContainer');
-    if (!container || !AppState.currentUserId) return;
+    if (!container || !AppState.currentUserId) {
+      console.warn('⚠️ cargarPerfil: contenedor no encontrado o usuario no autenticado');
+      return;
+    }
 
     try {
-      const userDoc = await firebaseServices.db.collection('users').doc(AppState.currentUserId).get();
+      console.log('🔄 Cargando perfil desde Firestore (source: server)...');
+      // Forzar recarga desde servidor para obtener emailVerified actualizado
+      const userDoc = await firebaseServices.db.collection('users').doc(AppState.currentUserId).get({ source: 'server' });
       const userData = userDoc.data();
+      console.log('📄 Datos del perfil obtenidos, emailVerified =', userData.emailVerified);
 
       const friendIds = userData.friendIds || [];
       const currentCount = userData.friendsCount || 0;
@@ -80,6 +86,7 @@ const Profile = {
       // NOTA: Se ha eliminado el botón de reenviar verificación del perfil
 
       container.innerHTML = html;
+      console.log('✅ Perfil renderizado correctamente');
 
     } catch (error) {
       console.error('Error cargando perfil:', error);
