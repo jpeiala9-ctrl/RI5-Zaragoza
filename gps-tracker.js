@@ -1,5 +1,5 @@
 // ==================== gps-tracker.js ====================
-// Versión: 2.35 - Sin botón "INICIAR IGUALMENTE", modal de confirmación personalizado, descripción centrada
+// Versión: 2.36 - Eliminados toasts duplicados, solo un toast al finalizar
 // ====================
 
 const GPSTracker = {
@@ -213,7 +213,6 @@ const GPSTracker = {
           #gpsTimer { font-size: 28px !important; }
           .btn-row button { height: 40px !important; font-size: 12px !important; }
         }
-        /* Modal de confirmación */
         #gpsConfirm, #gpsConfirmTerminar {
           display: none;
           position: fixed;
@@ -245,7 +244,6 @@ const GPSTracker = {
         .step-dot-active { animation: stepPulse 1.5s infinite; }
       </style>
 
-      <!-- Pantalla de pre‑lock (sin botón "INICIAR IGUALMENTE") -->
       <div id="gpsPreLock" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:30px;text-align:center;background:#0a0a0a;">
         <div style="font-size:16px;letter-spacing:3px;color:#c0a060;margin-bottom:20px;">OBTENIENDO GPS...</div>
         <div id="preLockStatus" style="font-size:12px;color:#555;margin-bottom:30px;">buscando satélites</div>
@@ -276,7 +274,6 @@ const GPSTracker = {
             </div>
           </div>
           <div id="gpsStepDots" style="display:flex;gap:4px;margin-top:4px;"></div>
-          <!-- Descripción del paso: más grande y centrada -->
           <div id="gpsStepDesc" style="font-size:14px;color:#aaa;margin-top:4px;line-height:1.3;max-height:48px;overflow:hidden;text-align:center;"></div>
         </div>
         <div class="map-container">
@@ -309,7 +306,6 @@ const GPSTracker = {
         </div>
       </div>
 
-      <!-- Modal principal: Terminar / Continuar (para sesión final) -->
       <div id="gpsConfirm">
         <div class="confirm-content">
           <div style="font-size:48px;margin-bottom:12px;">⏹️</div>
@@ -321,7 +317,6 @@ const GPSTracker = {
         </div>
       </div>
 
-      <!-- Modal de confirmación personalizada (para confirmar el cierre de sesión) -->
       <div id="gpsConfirmTerminar">
         <div class="confirm-content">
           <div style="font-size:48px;margin-bottom:12px;">❓</div>
@@ -352,14 +347,6 @@ const GPSTracker = {
     if (exitBtn) exitBtn.onclick = () => this._salirSinGuardar();
     if (terminarSiBtn) terminarSiBtn.onclick = () => this._terminarSesionConfirmado();
     if (terminarNoBtn) terminarNoBtn.onclick = () => this._cancelarConfirmTerminar();
-  },
-
-  _mostrarConfirmTerminar() {
-    document.getElementById('gpsConfirmTerminar').style.display = 'flex';
-  },
-
-  _cancelarConfirmTerminar() {
-    document.getElementById('gpsConfirmTerminar').style.display = 'none';
   },
 
   _renderStepDots() {
@@ -646,7 +633,6 @@ const GPSTracker = {
     if (typeof Utils !== 'undefined') Utils.showToast('Sesión cancelada sin guardar', 'warning', 3000);
   },
 
-  // Nueva función: se llama cuando se pulsa "TERMINAR" en el modal principal
   _mostrarConfirmTerminar() {
     document.getElementById('gpsConfirmTerminar').style.display = 'flex';
   },
@@ -676,6 +662,7 @@ const GPSTracker = {
     await this._guardarYPublicar(distKm, elapsedMs, tipo);
     this._limpiarRecursos();
     document.getElementById('gpsTrackerOverlay')?.remove();
+    // Único toast: solo aquí se muestra
     if (typeof Utils !== 'undefined') {
       Utils.showToast(tipo === 'completo' ? '✅ Sesión completada' : '🟠 Sesión parcialmente completada', 'success', 3000);
       if (tipo === 'completo' && typeof Utils.launchConfetti === 'function') Utils.launchConfetti();
@@ -719,6 +706,7 @@ const GPSTracker = {
     await planRef.update({ [`gpsTrack.${this.diaIndex}`]: trackData });
 
     if (window.PlanGenerator && typeof PlanGenerator.marcarSesionRealizada === 'function') {
+      // silent = true para que no muestre toast en calendar.js
       await PlanGenerator.marcarSesionRealizada(
         this.diaIndex, 
         true, 
@@ -727,10 +715,7 @@ const GPSTracker = {
         parseFloat(distKm.toFixed(3)),
         true  // silent: evita toast duplicado
       );
-      // Solo mostramos un toast aquí (ya no se muestra en marcarSesionRealizada)
-      if (typeof Utils !== 'undefined') {
-        Utils.showToast(tipo === 'completo' ? '✅ Sesión completada' : '🟠 Sesión parcialmente completada', 'success', 3000);
-      }
+      // No mostramos toast aquí (ya se muestra en _guardarYFinalizar)
     } else {
       const estado = { realizada: true, tipo: tipo };
       await planRef.update({ [`sesionesRealizadas.${this.diaIndex}`]: estado });
@@ -743,9 +728,7 @@ const GPSTracker = {
         if (!AppState.sesionesRealizadas) AppState.sesionesRealizadas = {};
         AppState.sesionesRealizadas[this.diaIndex] = estado;
       }
-      if (typeof Utils !== 'undefined') {
-        Utils.showToast(tipo === 'completo' ? '✅ Sesión completada' : '🟠 Sesión parcialmente completada', 'success', 3000);
-      }
+      // En fallback tampoco mostramos toast
     }
   },
 
@@ -779,4 +762,4 @@ const GPSTracker = {
 };
 
 window.GPSTracker = GPSTracker;
-console.log('✅ GPSTracker v2.35 - Sin botón "iniciar igualmente", confirmación modal, descripción centrada');
+console.log('✅ GPSTracker v2.36 - Sin toasts duplicados, confirmación modal');
