@@ -1,5 +1,5 @@
 // ==================== profile.js - TARJETA CON MODAL DE INSIGNIAS (SOLO ICONOS) ====================
-// Versión: 10.6 - Minimapa claro, visor funcional, sin emojis en GPS
+// Versión: 10.7 - Minimapa claro, visor funcional, prioriza GPS real, sin emojis en GPS
 // ====================
 
 const Profile = {
@@ -257,6 +257,7 @@ const Profile = {
             } catch (e) {}
             const tipoEmoji = { rodaje: '🏃‍♂️', tempo: '⚡', series: '🔁', largo: '📏', strength: '💪' }[entry.trainingType] || '🏃';
             const trainingName = entry.trainingName ? Utils.escapeHTML(entry.trainingName) : Utils.escapeHTML(entry.trainingType).toUpperCase();
+            // PRIORIZAR DATOS GPS REALES
             const duracion = entry.gpsDurationMs ? Math.round(entry.gpsDurationMs / 60000) : (entry.duration || 0);
             const distancia = entry.gpsDistanceKm ? entry.gpsDistanceKm.toFixed(2) : (isFinite(entry.distancia) ? entry.distancia.toFixed(2) : '0.00');
             const tss = entry.tss || 0;
