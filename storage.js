@@ -1,5 +1,5 @@
 // ==================== storage.js - Módulo de almacenamiento completo + GAMIFICACIÓN ====================
-// Versión: 3.27 - Mensajes de soporte: eliminación sincronizada + permisos para usuarios
+// Versión: 3.28 - CORREGIDO: mensajes de soporte con globalId para marcar como leídos correctamente
 // ====================
 
 const Storage = {
@@ -596,13 +596,13 @@ const Storage = {
       Utils.showToast(`⚠️ ${nuevosPendientes.length} cálculos pendientes no pudieron sincronizarse`, 'warning'); 
   },
   
-  // ==================== NUEVO SISTEMA DE SOPORTE ====================
+  // ==================== NUEVO SISTEMA DE SOPORTE (CORREGIDO) ====================
   
   /**
    * Envía un mensaje de soporte.
    * - Guarda en la colección global 'soporteMensajes' para el administrador.
-   * - Guarda en la subcolección 'mensajes' del usuario destinatario (si no es admin).
-   * - Guarda en la subcolección 'mensajes' del usuario remitente (si no es admin).
+   * - Guarda en la subcolección 'mensajes' del usuario destinatario (si no es admin) con globalId.
+   * - Guarda en la subcolección 'mensajes' del usuario remitente (si no es admin) con globalId.
    */
   async enviarMensajeSoporte(fromUid, toUid, texto) {
     if (!fromUid || !toUid || !texto) return false;
@@ -617,8 +617,10 @@ const Storage = {
         fecha: new Date().toLocaleString()
       };
       
-      // 1. Guardar en la colección global (para el administrador)
-      await firebaseServices.db.collection('soporteMensajes').add({ ...mensaje });
+      // 1. Guardar en la colección global y obtener el ID
+      const mensajeRef = await firebaseServices.db.collection('soporteMensajes').add({ ...mensaje });
+      const globalId = mensajeRef.id;
+      const mensajeConId = { ...mensaje, globalId: globalId, esParaUsuario: true };
       
       // 2. Guardar en la subcolección del destinatario (si no es admin)
       const adminUid = await this.getAdminUid();
@@ -627,8 +629,8 @@ const Storage = {
           .collection('users')
           .doc(toUid)
           .collection('mensajes')
-          .add({ ...mensaje, esParaUsuario: true });
-        console.log(`📨 Mensaje guardado en subcolección de ${toUid}`);
+          .add({ ...mensajeConId });
+        console.log(`📨 Mensaje guardado en subcolección de ${toUid} con globalId ${globalId}`);
       }
       
       // 3. Guardar en la subcolección del remitente (si no es admin)
@@ -637,11 +639,11 @@ const Storage = {
           .collection('users')
           .doc(fromUid)
           .collection('mensajes')
-          .add({ ...mensaje, esParaUsuario: true });
-        console.log(`📨 Mensaje guardado en subcolección de ${fromUid}`);
+          .add({ ...mensajeConId });
+        console.log(`📨 Mensaje guardado en subcolección de ${fromUid} con globalId ${globalId}`);
       }
       
-      console.log(`✅ Mensaje enviado de ${fromUid} a ${toUid}`);
+      console.log(`✅ Mensaje enviado de ${fromUid} a ${toUid} (globalId: ${globalId})`);
       return true;
     } catch (error) {
       console.error('❌ Error enviando mensaje de soporte:', error);
@@ -690,17 +692,18 @@ const Storage = {
   },
 
   /**
-   * Marca un mensaje de soporte como leído (en la subcolección del usuario).
+   * Marca un mensaje de soporte como leído (en la subcolección del usuario y en la global).
+   * Busca por globalId en lugar de id.
    */
   async marcarMensajeSoporteLeido(mensajeId, usuarioUid) {
     if (!mensajeId || !usuarioUid) return;
     try {
-      // Buscar el mensaje en la subcolección del usuario
+      // Buscar en la subcolección del usuario usando globalId
       const snapshot = await firebaseServices.db
         .collection('users')
         .doc(usuarioUid)
         .collection('mensajes')
-        .where('id', '==', mensajeId)
+        .where('globalId', '==', mensajeId)
         .get();
       
       const batch = firebaseServices.db.batch();
@@ -709,12 +712,17 @@ const Storage = {
       });
       await batch.commit();
       
-      // También marcar en la colección global si existe
+      // También marcar en la colección global
       await firebaseServices.db
         .collection('soporteMensajes')
         .doc(mensajeId)
         .update({ leido: true })
         .catch(() => {});
+      
+      // Forzar actualización del badge (por si el listener no se dispara)
+      if (typeof UI !== 'undefined' && UI.actualizarBadgeMensajes) {
+        UI.actualizarBadgeMensajes();
+      }
       
       console.log(`✅ Mensaje ${mensajeId} marcado como leído para usuario ${usuarioUid}`);
     } catch (error) {
