@@ -1,0 +1,238 @@
+// ==================== sw.js - Service Worker RI5 ====================
+// Versión: 3.39 - Bump de caché (v282 -> v283): gps-track-viewer.js -- FIX
+//                del "latido" incómodo al abrir el modal del track GPS
+//                desde el Muro o el Perfil. Causa: al crear el mapa, tras
+//                el primer encuadre (fitBounds) había una segunda llamada
+//                fija a los 300ms "por si acaso" el layout no estuviera
+//                asentado -- pero esa llamada se disparaba SIEMPRE, en
+//                cada apertura, aunque el contenedor no hubiera cambiado
+//                de tamaño ni un píxel desde el primer encuadre; ese
+//                segundo fitBounds sobre el mismo mapa (aunque con
+//                animate:false) se notaba como un pequeño salto/latido
+//                justo después de abrirse. Se sustituye por un
+//                ResizeObserver que solo reencuadra si el contenedor
+//                cambia de tamaño de verdad (layout tardío, rotación,
+//                resize de ventana) -- en la apertura normal ya no hay
+//                doble salto, y el mapa sigue totalmente interactivo
+//                (se puede mover y hacer zoom con normalidad).
+// Versión: 3.38 - Bump de caché (v281 -> v282): gamification.js -- FIX de
+//                un caso límite real del fix de récords de la v3.36: capar
+//                a 8s el tiempo de CUALQUIER hueco entre dos puntos GPS
+//                (_MAX_GAP_MS) arreglaba las paradas/pausas, pero si
+//                durante ese mismo hueco se cubría una distancia real
+//                considerable -- ej. un corte de señal GPS de 40s dentro
+//                de un túnel o entre edificios altos, sin dejar de correr
+//                -- capar el tiempo dejando la distancia completa producía
+//                un ritmo implícito imposible que "ganaría" con toda
+//                seguridad la búsqueda del tramo más rápido: un récord
+//                falso, esta vez demasiado RÁPIDO en vez de demasiado
+//                lento (el problema contrario al de la v3.36). Ahora
+//                _mejorTramo() distingue "parada de verdad" (poca o
+//                ninguna distancia real en el hueco -- se sigue capando el
+//                tiempo, como ya hacía) de "hueco no fiable" (mucho tiempo
+//                Y mucha distancia real a la vez -- no hay forma de saber
+//                el ritmo real ahí dentro, así que cualquier tramo
+//                candidato que lo cruce se descarta directamente en vez de
+//                adivinar). Con esto, cualquier récord (1/5/10/21.1/42.2
+//                km) que se registre puede confiarse: o sale de un tramo
+//                GPS completo y fiable de principio a fin, o no se
+//                registra ningún récord para esa sesión.
+// Versión: 3.37 - Bump de caché (v280 -> v281): index.html, app.js -- FIX
+//                modales de admin (Detalle de usuario, y las 4 tarjetas
+//                de listas: Total/Premium/Nuevos/Sesiones hoy): el botón
+//                CERRAR se desplazaba con el scroll de la lista en vez de
+//                quedarse fijo abajo -- había que bajar del todo para
+//                llegar a él. Causa: .admin-modal-content (la caja que
+//                envuelve cabecera+contenido+pie) tenía el overflow-y:auto
+//                puesto a ELLA, así que los tres bloques hacían scroll
+//                juntos como uno solo. Ahora .admin-modal-content es un
+//                contenedor flex en columna que ya no hace scroll (over-
+//                flow:hidden); cabecera y pie quedan fijos (flex-shrink:0)
+//                y solo el div de contenido interior (#adminModalContent /
+//                #adminListModalContent) crece y hace scroll -- el botón
+//                CERRAR queda siempre visible sin importar cuántos
+//                usuarios haya en la lista. De paso, en app.js, el reseteo
+//                de scroll al abrir/cerrar el modal de detalle de usuario
+//                apuntaba a la caja exterior (que ya no se mueve); ahora
+//                apunta al div interior correcto, así que cada vez que se
+//                abre con otro usuario aparece desde arriba, no por donde
+//                se dejó la vez anterior. También había una regla CSS
+//                duplicada específica de #adminListModal que volvía a
+//                poner overflow-y:auto en toda la caja, deshaciendo el fix
+//                solo para esa tarjeta -- se elimina.
+// Versión: 3.36 - Bump de caché (v279 -> v280): gamification.js,
+//                session-invites.js -- dos fixes:
+//                1) gamification.js: FIX récord por km más lento que la
+//                   propia media de la sesión (ej. sesión a 6:20/km de
+//                   media, "nuevo récord" mostrado a 7:xx/km -- matemáti-
+//                   camente imposible si de verdad es el tramo más
+//                   rápido). Causa: _mejorTramo() calculaba la duración de
+//                   cada tramo candidato como la diferencia bruta de
+//                   marca de tiempo (reloj real) entre sus dos puntos GPS,
+//                   sin descontar ninguna parada -- ni las del botón
+//                   PAUSA (que sí se descuentan para la media de la
+//                   sesión, ver _getElapsed() en gps-tracker.js), ni las
+//                   paradas "silenciosas" sin pulsar pausa (semáforo,
+//                   corte de señal bajo techo/entre edificios), que
+//                   tampoco añaden puntos al track pero sí dejan pasar
+//                   tiempo real. Si el tramo más rápido cruzaba uno de
+//                   estos huecos, salía con una duración inflada. Ahora
+//                   se usa un "tiempo activo" que tapa cualquier hueco
+//                   entre dos puntos GPS consecutivos a un máximo de 8s
+//                   antes de sumarlo (ver _MAX_GAP_MS), igual de estricto
+//                   con una sesión corrida sin parar (los huecos normales
+//                   entre puntos GPS son de pocos segundos) pero ya no
+//                   penaliza un tramo por cruzar una parada larga.
+//                2) session-invites.js: FIX bucle infinito en la pantalla
+//                   "⏳ Calculando tu ritmo, tiempo y calorías..." al
+//                   recibir una sesión enviada por un admin. Causa: un
+//                   ReferenceError real (variables `modoParte`/
+//                   `parteInput` usadas fuera del bloque donde se
+//                   declaraban, para sesiones tipo 'series') que se
+//                   disparaba en cuanto la comprobación de "sin zonas
+//                   calculadas" no cortaba antes -- y esa comprobación
+//                   nunca se disparaba de verdad porque miraba un campo
+//                   que nunca llegaba a valer null. Al no capturarse el
+//                   error, la ejecución se cortaba justo tras pintar el
+//                   modal de "Calculando...", que quedaba así congelado
+//                   para siempre. Ahora la comprobación de "sin zonas" se
+//                   hace de forma fiable ANTES de intentar personalizar
+//                   nada (mirando directamente si el destinatario tiene
+//                   cálculo de zonas guardado): si no lo tiene, se avisa
+//                   y la sesión se rechaza automáticamente en el momento
+//                   (ya no se ofrece "ir a calcular zonas y volver más
+//                   tarde" -- a petición del usuario, el admin tendrá que
+//                   reenviarla cuando el destinatario tenga sus zonas).
+// Versión: 3.35 - Bump de caché (v278 -> v279): gps-tracker.js -- a
+//                petición del usuario, se ELIMINA POR COMPLETO el ajuste
+//                a calles (OSRM _mapMatchTrack/_matchEsFiable): el track
+//                del mapa debe ser exactamente el grabado por el GPS,
+//                sin que ningún servicio externo lo reinterprete (podía
+//                "pegar" la ruta a un camino no pisado si se corría por
+//                campo). El único procesado que queda es Douglas-Peucker,
+//                con el margen bajado de 4m a 2m (el error máximo pedido)
+//                -- solo reduce el número de puntos guardados, nunca
+//                desvía el trazado más de esos 2m. Los saltos GPS
+//                imposibles (ej. "20m en 1s") ya se descartaban en
+//                directo desde antes (_filterGPS, tope 18 km/h).
+// =====================================================================
+
+const CACHE_NAME = 'ri5-v283';
+
+const PRECACHE_URLS = [
+  './',
+  './index.html',
+  './app.js',
+  './auth.js',
+  './storage.js',
+  './training.js',
+  './entrenamientos.js',
+  './calendar.js',
+  './friends.js',
+  './wall.js',
+  './profile.js',
+  './gamification.js',
+  './gps-tracker.js',
+  './gps-track-viewer.js',
+  './session-invites.js',
+  './firebase-config.js'
+];
+
+const NETWORK_ONLY_DOMAINS = [
+  'firestore.googleapis.com',
+  'firebase.googleapis.com',
+  'firebaseio.com',
+  'identitytoolkit.googleapis.com',
+  'securetoken.googleapis.com',
+  'firebasestorage.googleapis.com',
+  'nominatim.openstreetmap.org'
+];
+
+self.addEventListener('install', event => {
+  console.log('[SW] Instalando', CACHE_NAME, '...');
+  event.waitUntil(
+    caches.open(CACHE_NAME).then(cache => {
+      return cache.addAll(PRECACHE_URLS).catch(err => {
+        console.warn('[SW] Algunos archivos no se pudieron precargar:', err);
+      });
+    }).then(() => self.skipWaiting())
+  );
+});
+
+self.addEventListener('activate', event => {
+  console.log('[SW] Activando...');
+  event.waitUntil(
+    caches.keys().then(keys =>
+      Promise.all(
+        keys
+          .filter(key => key !== CACHE_NAME)
+          .map(key => {
+            console.log('[SW] Eliminando cache antigua:', key);
+            return caches.delete(key);
+          })
+      )
+    ).then(() => self.clients.claim())
+    .then(() => {
+      return self.clients.matchAll({ type: 'window' }).then(clientsList => {
+        clientsList.forEach(client => {
+          client.postMessage({ type: 'RI5_NEW_VERSION', version: CACHE_NAME });
+        });
+      });
+    })
+  );
+});
+
+self.addEventListener('fetch', event => {
+  const url = new URL(event.request.url);
+
+  if (event.request.method !== 'GET') return;
+  if (NETWORK_ONLY_DOMAINS.some(domain => url.hostname.includes(domain))) return;
+  if (url.protocol === 'chrome-extension:') return;
+
+  event.respondWith(
+    caches.match(event.request).then(cached => {
+      if (cached) return cached;
+
+      return fetch(event.request).then(response => {
+        if (
+          response.ok &&
+          (url.origin === self.location.origin ||
+           url.hostname.includes('unpkg.com') ||
+           url.hostname.includes('googleapis.com') ||
+           url.hostname.includes('cdnjs.cloudflare.com') ||
+           url.hostname.includes('basemaps.cartocdn.com'))
+        ) {
+          const responseClone = response.clone();
+          caches.open(CACHE_NAME).then(cache => cache.put(event.request, responseClone));
+        }
+        return response;
+      }).catch(() => {
+        if (event.request.mode === 'navigate') {
+          return caches.match('./index.html');
+        }
+      });
+    })
+  );
+});
+
+self.addEventListener('push', event => {
+  if (!event.data) return;
+  const data = event.data.json();
+  event.waitUntil(
+    self.registration.showNotification(data.title || 'RI5', {
+      body: data.body || '',
+      icon: data.icon || './icon-192.png',
+      badge: './icon-192.png',
+      data: { url: data.url || '/' }
+    })
+  );
+});
+
+self.addEventListener('notificationclick', event => {
+  event.notification.close();
+  event.waitUntil(
+    clients.openWindow(event.notification.data.url || '/')
+  );
+});
+
+console.log('[SW] sw.js cargado correctamente (v283)');
